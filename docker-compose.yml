@@ -14,11 +14,15 @@ services:
       - app-network
 
   web:
-    build: .
+    build:
+      context: .
     environment:
       DATABASE_URL: postgresql://user:password@db:5432/usage_db
+      FLASK_ENV: development        # Set Flask to development mode
+    volumes:
+      - .:/app                      # Mount the current directory to /app in the container
     ports:
-      - "5001:5000"
+      - "5001:5000"                 # Map the container port 5000 to host port 5000
     depends_on:
       - db
     networks:
