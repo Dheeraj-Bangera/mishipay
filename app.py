@@ -45,7 +45,10 @@ def ingest_data():
     file_stream = StringIO(file.stream.read().decode("UTF8"), newline=None)
     reader = csv.DictReader(file_stream)
     
-    required_headers = ["username", " mac_address", " start_time", " usage_time", " upload", " download"]
+    # Normalize headers by stripping whitespace
+    reader.fieldnames = [header.strip() for header in reader.fieldnames]
+    
+    required_headers = ["username", "mac_address", "start_time", "usage_time", "upload", "download"]
     if not all(header in reader.fieldnames for header in required_headers):
         return jsonify({"ok": False, "error": {"message": "Missing required headers"}}), 400
 
@@ -54,13 +57,13 @@ def ingest_data():
         try:
             record = UserAnalytics(
                 username=row['username'].strip(),
-                mac_address=row[' mac_address'].strip(),
-                start_time=datetime.strptime(row[' start_time'].strip(), '%Y-%m-%d %H:%M:%S'),
-                usage_time=timedelta(hours=int(row[' usage_time'].split(":")[0]),
-                                   minutes=int(row[' usage_time'].split(":")[1]),
-                                   seconds=int(row[' usage_time'].split(":")[2])),
-                upload=float(row[' upload'].strip()),
-                download=float(row[' download'].strip())
+                mac_address=row['mac_address'].strip(),
+                start_time=datetime.strptime(row['start_time'].strip(), '%Y-%m-%d %H:%M:%S'),
+                usage_time=timedelta(hours=int(row['usage_time'].split(":")[0]),
+                                     minutes=int(row['usage_time'].split(":")[1]),
+                                     seconds=int(row['usage_time'].split(":")[2])),
+                upload=float(row['upload'].strip()),
+                download=float(row['download'].strip())
             )
             records.append(record)
         except Exception as e:
@@ -78,8 +81,7 @@ def format_time_duration(total_seconds):
     """Convert seconds to HHhMMm format"""
     if total_seconds is None:
         return "00h00m"
-    
-    # Convert to integer seconds
+  
     seconds = int(float(total_seconds))
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
