@@ -15,7 +15,8 @@ docker-compose up --build
 The application will be available at `http://localhost:5001`
 
 ## API Documentation
-
+### Postman Collection
+[![Run in Postman](https://run.pstmn.io/button.svg)](https://documenter.getpostman.com/view/27028215/2sAY52eLXd)
 ### 1. Ingest User Data
 Upload CSV file containing user analytics data.
 
