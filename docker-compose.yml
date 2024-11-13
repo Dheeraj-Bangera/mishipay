@@ -27,7 +27,21 @@ services:
       - db
     networks:
       - app-network
-
+  
+  test:
+    build:
+      context: .
+    command: ["pytest"]
+    environment:
+      FLASK_ENV: testing
+      DATABASE_URL: postgresql://user:password@db:5432/test_db 
+      PYTHONPATH: /app               
+    volumes:
+      - .:/app
+    depends_on:
+      - web
+    networks:
+      - app-network
 volumes:
   postgres_data:
 

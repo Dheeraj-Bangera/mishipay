@@ -5,272 +5,268 @@ from config import Config
 import csv
 from io import StringIO
 
-app = Flask(__name__)
-app.config.from_object(Config)
-db.init_app(app)
-
-with app.app_context():
-    from models import UserAnalytics
-
-def format_time_duration(seconds):
-    """Convert seconds to HHhMMm format"""
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    return f"{hours:02d}h{minutes:02d}m"
-
-def format_data_size(kilobits):
-    """Convert kilobits to human readable format (MB, GB, TB)"""
-    bytes_size = kilobits * 125  # Convert kilobits to bytes (1 kilobit = 125 bytes)
+def create_app(config_class=Config):
+    # Initialize the Flask app
+    app = Flask(__name__)
     
-    if bytes_size >= 1099511627776:  # TB
-        return f"{bytes_size/1099511627776:.1f}TB"
-    elif bytes_size >= 1073741824:  # GB
-        return f"{bytes_size/1073741824:.1f}GB"
-    else:  # MB
-        return f"{bytes_size/1048576:.1f}MB"
+    # Load configuration from a class
+    app.config.from_object(config_class)
 
-@app.route('/', methods=['GET'])
-def home():
-    return jsonify({"message": "Hello, world!"})
+    # Initialize extensions
+    db.init_app(app)
 
-@app.route('/ingest', methods=['POST'])
-def ingest_data():
-    if 'file' not in request.files:
-        return jsonify({"ok": False, "error": {"message": "No file provided"}}), 400
+    # Register routes
+    @app.route('/', methods=['GET'])
+    def home():
+        return jsonify({"message": "Hello, world!"})
 
-    file = request.files['file']
-    if not file.filename.endswith('.csv'):
-        return jsonify({"ok": False, "error": {"message": "Invalid file format. Please upload a CSV file."}}), 400
+    @app.route('/ingest', methods=['POST'])
+    def ingest_data():
+        if 'file' not in request.files:
+            return jsonify({"ok": False, "error": {"message": "No file provided"}}), 400
 
-    file_stream = StringIO(file.stream.read().decode("UTF8"), newline=None)
-    reader = csv.DictReader(file_stream)
-    
-    # Normalize headers by stripping whitespace
-    reader.fieldnames = [header.strip() for header in reader.fieldnames]
-    
-    required_headers = ["username", "mac_address", "start_time", "usage_time", "upload", "download"]
-    if not all(header in reader.fieldnames for header in required_headers):
-        return jsonify({"ok": False, "error": {"message": "Missing required headers"}}), 400
+        file = request.files['file']
+        if not file.filename.endswith('.csv'):
+            return jsonify({"ok": False, "error": {"message": "Invalid file format. Please upload a CSV file."}}), 400
 
-    records = []
-    for row in reader:
+        file_stream = StringIO(file.stream.read().decode("UTF8"), newline=None)
+        reader = csv.DictReader(file_stream)
+        
+        # Normalize headers by stripping whitespace
+        reader.fieldnames = [header.strip() for header in reader.fieldnames]
+        
+        required_headers = ["username", "mac_address", "start_time", "usage_time", "upload", "download"]
+        if not all(header in reader.fieldnames for header in required_headers):
+            return jsonify({"ok": False, "error": {"message": "Missing required headers"}}), 400
+
+        from models import UserAnalytics  # Import here to avoid circular imports
+        
+        records = []
+        for row in reader:
+            try:
+                record = UserAnalytics(
+                    username=row['username'].strip(),
+                    mac_address=row['mac_address'].strip(),
+                    start_time=datetime.strptime(row['start_time'].strip(), '%Y-%m-%d %H:%M:%S'),
+                    usage_time=timedelta(hours=int(row['usage_time'].split(":")[0]),
+                                       minutes=int(row['usage_time'].split(":")[1]),
+                                       seconds=int(row['usage_time'].split(":")[2])),
+                    upload=float(row['upload'].strip()),
+                    download=float(row['download'].strip())
+                )
+                records.append(record)
+            except Exception as e:
+                return jsonify({"ok": False, "error": {"message": f"Data format issue: {str(e)}"}}), 400
+
         try:
-            record = UserAnalytics(
-                username=row['username'].strip(),
-                mac_address=row['mac_address'].strip(),
-                start_time=datetime.strptime(row['start_time'].strip(), '%Y-%m-%d %H:%M:%S'),
-                usage_time=timedelta(hours=int(row['usage_time'].split(":")[0]),
-                                     minutes=int(row['usage_time'].split(":")[1]),
-                                     seconds=int(row['usage_time'].split(":")[2])),
-                upload=float(row['upload'].strip()),
-                download=float(row['download'].strip())
-            )
-            records.append(record)
+            db.session.bulk_save_objects(records)
+            db.session.commit()
+            return jsonify({"ok": True, "message": "Data ingested successfully!"}), 201
         except Exception as e:
-            return jsonify({"ok": False, "error": {"message": f"Data format issue: {str(e)}"}}), 400
+            db.session.rollback()
+            return jsonify({"ok": False, "error": {"message": f"Database error: {str(e)}"}}), 500
 
-    try:
-        db.session.bulk_save_objects(records)
-        db.session.commit()
-        return jsonify({"ok": True, "message": "Data ingested successfully!"}), 201
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({"ok": False, "error": {"message": f"Database error: {str(e)}"}}), 500
 
-def format_time_duration(total_seconds):
-    """Convert seconds to HHhMMm format"""
-    if total_seconds is None:
-        return "00h00m"
-  
-    seconds = int(float(total_seconds))
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    return f"{hours:02d}h{minutes:02d}m"
-
-@app.route('/analytics', methods=['GET'])
-def get_top_users():
-    try:
-        date_str = request.args.get('date')
-        if not date_str:
-            return jsonify({"ok": False, "error": {"message": "date parameter is required"}}), 400
-            
+    def format_time_duration(seconds):
+        if seconds is None:
+            return "0s"
+        hours, remainder = divmod(int(seconds), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours}h {minutes}m {seconds}s" if hours > 0 else f"{minutes}m {seconds}s"
+    @app.route('/analytics', methods=['GET'])
+    def get_top_users():
         try:
-            date = datetime.strptime(date_str, '%d%m%Y')
-            if date > datetime.now():
-                return jsonify({"ok": False, "error": {"message": "invalid date"}}), 422
-        except ValueError:
-            return jsonify({"ok": False, "error": {"message": "invalid date format"}}), 400
+            date_str = request.args.get('date')
+            if not date_str:
+                return jsonify({"ok": False, "error": {"message": "date parameter is required"}}), 400
+                
+            try:
+                date = datetime.strptime(date_str, '%d%m%Y')
+                if date > datetime.now():
+                    return jsonify({"ok": False, "error": {"message": "invalid date"}}), 422
+            except ValueError:
+                return jsonify({"ok": False, "error": {"message": "invalid date format"}}), 400
 
-        page = int(request.args.get('page', 1))
-        page_size = int(request.args.get('pageSize', 100))
+            page = int(request.args.get('page', 1))
+            page_size = int(request.args.get('pageSize', 100))
 
-        # Calculate time ranges
-        day_start = date - timedelta(days=1)
-        week_start = date - timedelta(days=7)
-        month_start = date - timedelta(days=30)
+            from models import UserAnalytics  # Import here to avoid circular imports
 
-        # Build the query with updated case syntax
-        results = db.session.query(
-            UserAnalytics.username,
-            # Last day usage (in seconds)
-            db.func.sum(
-                db.case(
-                    (UserAnalytics.start_time >= day_start, 
-                     db.func.extract('epoch', UserAnalytics.usage_time)),
-                    else_=0
-                )
-            ).label('day_time'),
-            # Last 7 days usage (in seconds)
-            db.func.sum(
-                db.case(
-                    (UserAnalytics.start_time >= week_start, 
-                     db.func.extract('epoch', UserAnalytics.usage_time)),
-                    else_=0
-                )
-            ).label('week_time'),
-            # Last 30 days usage (in seconds)
-            db.func.sum(
-                db.case(
-                    (UserAnalytics.start_time >= month_start, 
-                     db.func.extract('epoch', UserAnalytics.usage_time)),
-                    else_=0
-                )
-            ).label('month_time')
-        ).filter(
-            UserAnalytics.start_time >= month_start
-        ).group_by(
-            UserAnalytics.username
-        ).order_by(
-            db.desc('month_time')
-        ).paginate(page=page, per_page=page_size, error_out=False)
+            # Calculate time ranges
+            day_start = date - timedelta(days=1)
+            week_start = date - timedelta(days=7)
+            month_start = date - timedelta(days=30)
 
-        response_data = []
-        for result in results.items:
-            response_data.append({
-                "username": result.username,
-                "lastDayUsage": format_time_duration(result.day_time),
-                "last7DayUsage": format_time_duration(result.week_time),
-                "last30DayUsage": format_time_duration(result.month_time)
+            results = db.session.query(
+                UserAnalytics.username,
+                db.func.sum(
+                    db.case(
+                        (UserAnalytics.start_time >= day_start, 
+                         db.func.extract('epoch', UserAnalytics.usage_time)),
+                        else_=0
+                    )
+                ).label('day_time'),
+                db.func.sum(
+                    db.case(
+                        (UserAnalytics.start_time >= week_start, 
+                         db.func.extract('epoch', UserAnalytics.usage_time)),
+                        else_=0
+                    )
+                ).label('week_time'),
+                db.func.sum(
+                    db.case(
+                        (UserAnalytics.start_time >= month_start, 
+                         db.func.extract('epoch', UserAnalytics.usage_time)),
+                        else_=0
+                    )
+                ).label('month_time')
+            ).filter(
+                UserAnalytics.start_time >= month_start
+            ).group_by(
+                UserAnalytics.username
+            ).order_by(
+                db.desc('month_time')
+            ).paginate(page=page, per_page=page_size, error_out=False)
+
+            response_data = []
+            for result in results.items:
+                response_data.append({
+                    "username": result.username,
+                    "lastDayUsage": format_time_duration(result.day_time),
+                    "last7DayUsage": format_time_duration(result.week_time),
+                    "last30DayUsage": format_time_duration(result.month_time)
+                })
+
+            return jsonify({
+                "ok": True,
+                "data": response_data,
+                "pageSize": page_size,
+                "page": page,
+                "totalPages": results.pages
             })
 
-        return jsonify({
-            "ok": True,
-            "data": response_data,
-            "pageSize": page_size,
-            "page": page,
-            "totalPages": results.pages
-        })
+        except Exception as e:
+            return jsonify({"ok": False, "error": {"message": str(e)}}), 500
 
-    except Exception as e:
-        return jsonify({"ok": False, "error": {"message": str(e)}}), 500
-
-@app.route('/user/search', methods=['GET'])
-def get_user_details():
-    try:
-        username = request.args.get('username')
-        datetime_str = request.args.get('datetime')
-        
-        if not username or not datetime_str:
-            return jsonify({"ok": False, "error": {"message": "username and datetime are required"}}), 400
-
+    @app.route('/user/search', methods=['GET'])
+    @app.route('/user/search', methods=['GET'])
+    def get_user_details():
         try:
-            datetime_obj = datetime.strptime(datetime_str, '%Y%m%dT%H%M')
-        except ValueError:
-            return jsonify({"ok": False, "error": {"message": "invalid datetime format"}}), 400
+            from models import UserAnalytics
+            username = request.args.get('username')
+            datetime_str = request.args.get('datetime')
 
-        hour_ago = datetime_obj - timedelta(hours=1)
-        six_hours_ago = datetime_obj - timedelta(hours=6)
-        day_ago = datetime_obj - timedelta(hours=24)
+            if not username or not datetime_str:
+                return jsonify({"ok": False, "error": {"message": "username and datetime are required"}}), 400
 
-        result = db.session.query(
-            UserAnalytics.username,
-            db.func.sum(
-                db.case(
-                    (UserAnalytics.start_time >= hour_ago, UserAnalytics.usage_time),
-                    else_=timedelta(0)
-                )
-            ).label('hour_time'),
-            db.func.sum(
-                db.case(
-                    (UserAnalytics.start_time >= hour_ago, UserAnalytics.upload),
-                    else_=0
-                )
-            ).label('hour_upload'),
-            db.func.sum(
-                db.case(
-                    (UserAnalytics.start_time >= hour_ago, UserAnalytics.download),
-                    else_=0
-                )
-            ).label('hour_download'),
-            db.func.sum(
-                db.case(
-                    (UserAnalytics.start_time >= six_hours_ago, UserAnalytics.usage_time),
-                    else_=timedelta(0)
-                )
-            ).label('six_hour_time'),
-            db.func.sum(
-                db.case(
-                    (UserAnalytics.start_time >= six_hours_ago, UserAnalytics.upload),
-                    else_=0
-                )
-            ).label('six_hour_upload'),
-            db.func.sum(
-                db.case(
-                    (UserAnalytics.start_time >= six_hours_ago, UserAnalytics.download),
-                    else_=0
-                )
-            ).label('six_hour_download'),
-            db.func.sum(
-                db.case(
-                    (UserAnalytics.start_time >= day_ago, UserAnalytics.usage_time),
-                    else_=timedelta(0)
-                )
-            ).label('day_time'),
-            db.func.sum(
-                db.case(
-                    (UserAnalytics.start_time >= day_ago, UserAnalytics.upload),
-                    else_=0
-                )
-            ).label('day_upload'),
-            db.func.sum(
-                db.case(
-                    (UserAnalytics.start_time >= day_ago, UserAnalytics.download),
-                    else_=0
-                )
-            ).label('day_download')
-        ).filter(
-            UserAnalytics.username == username
-        ).group_by(
-            UserAnalytics.username
-        ).first()
+            # Parse datetime string using strptime
+            try:
+                datetime_obj = datetime.strptime(datetime_str, '%Y%m%dT%H%M')
+            except ValueError:
+                return jsonify({"ok": False, "error": {"message": "invalid datetime format"}}), 400
 
-        if not result:
-            return jsonify({"ok": False, "error": {"message": "user not found"}}), 404
+            # Perform calculations
+            hour_ago = datetime_obj - timedelta(hours=1)
+            six_hours_ago = datetime_obj - timedelta(hours=6)
+            day_ago = datetime_obj - timedelta(hours=24)
 
-        return jsonify({
-            "ok": True,
-            "data": {
-                "username": username,
-                "lastHourUsage": {
-                    "time": format_time_duration(result.hour_time.total_seconds()),
-                    "upload": format_data_size(result.hour_upload),
-                    "download": format_data_size(result.hour_download)
-                },
-                "last6HourUsage": {
-                    "time": format_time_duration(result.six_hour_time.total_seconds()),
-                    "upload": format_data_size(result.six_hour_upload),
-                    "download": format_data_size(result.six_hour_download)
-                },
-                "last24HourUsage": {
-                    "time": format_time_duration(result.day_time.total_seconds()),
-                    "upload": format_data_size(result.day_upload),
-                    "download": format_data_size(result.day_download)
+            # Query the database using the datetime object
+            result = db.session.query(
+                UserAnalytics.username,
+                db.func.sum(
+                    db.case(
+                        (UserAnalytics.start_time >= hour_ago, UserAnalytics.usage_time),
+                        else_=timedelta(0)
+                    )
+                ).label('hour_time'),
+                db.func.sum(
+                    db.case(
+                        (UserAnalytics.start_time >= hour_ago, UserAnalytics.upload),
+                        else_=0
+                    )
+                ).label('hour_upload'),
+                db.func.sum(
+                    db.case(
+                        (UserAnalytics.start_time >= hour_ago, UserAnalytics.download),
+                        else_=0
+                    )
+                ).label('hour_download'),
+                db.func.sum(
+                    db.case(
+                        (UserAnalytics.start_time >= six_hours_ago, UserAnalytics.usage_time),
+                        else_=timedelta(0)
+                    )
+                ).label('six_hour_time'),
+                db.func.sum(
+                    db.case(
+                        (UserAnalytics.start_time >= six_hours_ago, UserAnalytics.upload),
+                        else_=0
+                    )
+                ).label('six_hour_upload'),
+                db.func.sum(
+                    db.case(
+                        (UserAnalytics.start_time >= six_hours_ago, UserAnalytics.download),
+                        else_=0
+                    )
+                ).label('six_hour_download'),
+                db.func.sum(
+                    db.case(
+                        (UserAnalytics.start_time >= day_ago, UserAnalytics.usage_time),
+                        else_=timedelta(0)
+                    )
+                ).label('day_time'),
+                db.func.sum(
+                    db.case(
+                        (UserAnalytics.start_time >= day_ago, UserAnalytics.upload),
+                        else_=0
+                    )
+                ).label('day_upload'),
+                db.func.sum(
+                    db.case(
+                        (UserAnalytics.start_time >= day_ago, UserAnalytics.download),
+                        else_=0
+                    )
+                ).label('day_download')
+            ).filter(
+                UserAnalytics.username == username
+            ).group_by(
+                UserAnalytics.username
+            ).first()
+
+            print("here inside the hour",result)
+            if not result:
+                return jsonify({"ok": False, "error": {"message": "user not found"}}), 404
+
+            def format_data_size(size):
+                if size is None:
+                    return "0B"
+                for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+                    if size < 1024.0:
+                        return f"{size:.2f}{unit}"
+                    size /= 1024.0
+            return jsonify({
+                "ok": True,
+                "data": {
+                    "username": username,
+                    "lastHourUsage": {
+                        "time": format_time_duration(result.hour_time.total_seconds() if result.hour_time else 0),
+                        "upload": format_data_size(result.hour_upload),
+                        "download": format_data_size(result.hour_download)
+                    },
+                    "last6HourUsage": {
+                        "time": format_time_duration(result.six_hour_time.total_seconds() if result.six_hour_time else 0),
+                        "upload": format_data_size(result.six_hour_upload),
+                        "download": format_data_size(result.six_hour_download)
+                    },
+                    "last24HourUsage": {
+                        "time": format_time_duration(result.day_time.total_seconds() if result.day_time else 0),
+                        "upload": format_data_size(result.day_upload),
+                        "download": format_data_size(result.day_download)
+                    }
                 }
-            }
-        })
+            })
 
-    except Exception as e:
-        return jsonify({"ok": False, "error": {"message": str(e)}}), 500
-if __name__ == '__main__':
-    app.debug = True
-    app.run(host='0.0.0.0', port=5000)
+        except Exception as e:
+            return jsonify({"ok": False, "error": {"message": str(e)}}), 500
+
+    return app
