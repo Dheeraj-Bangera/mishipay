@@ -12,19 +12,32 @@ services:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - app-network
+  
+  cache:
+    image: redis:latest
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - app-network
 
   web:
     build:
       context: .
     environment:
-      DATABASE_URL: postgresql://user:password@db:5432/usage_db
-      FLASK_ENV: development        # Set Flask to development mode
+      - FLASK_ENV=development
+      - FLASK_APP=app.py
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - DATABASE_URL=postgresql://user:password@db:5432/usage_db
     volumes:
-      - .:/app                      # Mount the current directory to /app in the container
+      - .:/app
     ports:
-      - "5001:5000"                 # Map the container port 5000 to host port 5000
+      - "5001:5000"
     depends_on:
       - db
+      - cache
     networks:
       - app-network
   
@@ -34,14 +47,19 @@ services:
     command: ["pytest"]
     environment:
       FLASK_ENV: testing
-      DATABASE_URL: postgresql://user:password@db:5432/test_db 
-      PYTHONPATH: /app               
+      DATABASE_URL: postgresql://user:password@db:5432/test_db
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      PYTHONPATH: /app
     volumes:
       - .:/app
     depends_on:
-      - web
+      - db
+      - cache
     networks:
       - app-network
+
 volumes:
   postgres_data:
 
