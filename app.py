@@ -172,7 +172,7 @@ def create_app(config_class=Config):
             try:
                 datetime_obj = datetime.strptime(datetime_str, '%Y%m%dT%H%M')
             except ValueError:
-                return jsonify({"ok": False, "error": {"message": "invalid datetime format"}}), 400
+                return jsonify({"ok": False, "error": {"message": "Invalid datetime format"}}), 400
 
             cache_key = f"user:{username}:search:{datetime_str}"
             cached_data = redis_client.get(cache_key)
