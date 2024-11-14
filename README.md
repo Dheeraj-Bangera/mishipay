@@ -43,51 +43,6 @@ To run tests and ensure the API is functioning correctly, use the following comm
 ```bash
 docker-compose run test
 ```
-# User Analytics System
-# Optimized Approach
-
-### 1.Pre-Aggregated Data Approach (Not Scalable)
-This approach is based on pre-aggregating user data, specifically the top user statistics for any given date. For each user, we calculate their usage for the past 30 days, 7 days, and 1 day before a given day. This meant storing aggregated values for each user and each date, which would require creating a record for every day.
-
-For example, with 998 users, storing pre-aggregated data for one year would require `998 * 365 = 364,270` rows. This number jumps up to `1,059,960` in our case since the oldest data is of 2022.
-### 2.Redis Caching for Efficient Query Handling
-To overcome the inefficiency of storing pre-aggregated data, I have  implemented Redis caching to store the results of frequently requested queries and return them directly without the need for re-computation. Redis, being an in-memory data store, allows fast access to frequently used data, improving response times significantly.
-
-For analytics data, we store the results as a key-value pair in Redis using the format:
-```bash
-analytics:{date_str}:{page}:{page_size}
-```
-Where date_str is the specific date of the query, page refers to the page number for pagination, and page_size is the number of results to return per page. This allows us to quickly retrieve the cached result for any given analytics query.
-
-For user search queries, we use the following cache key format:
-```bash
-user:{username}:search:{datetime_str}
-```
-Here, username refers to the user's name and datetime_str represents the timestamp when the search was performed. By caching these results, we can quickly return the search results for the user, improving both the user experience and system performance.
-
-
-
-## Setup Steps
-1. Clone the repository:
-```bash
-git clone https://github.com/your-repo/user-analytics.git
-cd user-analytics
-```
-
-2. Start the application:
-```bash
-docker-compose up --build
-```
-
-The application will be available at `http://localhost:5001`
-## Testing the API
-
-To run tests and ensure the API is functioning correctly, use the following command to execute the test suite in a Docker container.
-
-### Run Tests
-```bash
-docker-compose run test
-```
 This command will execute the tests defined for the API written in the `test.py` inside tests directory
 
 ### Expected Output
