@@ -1,21 +1,22 @@
 from flask import Flask, request, jsonify
 from datetime import datetime, timedelta
-from extensions import db
+from extensions import db,redis_client
 from config import Config
 import csv
+import json
 from io import StringIO
 
 def create_app(config_class=Config):
-    # Initialize the Flask app
+
     app = Flask(__name__)
     
-    # Load configuration from a class
+
     app.config.from_object(config_class)
 
-    # Initialize extensions
+
     db.init_app(app)
 
-    # Register routes
+
     @app.route('/', methods=['GET'])
     def home():
         return jsonify({"message": "Hello, world!"})
@@ -32,14 +33,14 @@ def create_app(config_class=Config):
         file_stream = StringIO(file.stream.read().decode("UTF8"), newline=None)
         reader = csv.DictReader(file_stream)
         
-        # Normalize headers by stripping whitespace
+
         reader.fieldnames = [header.strip() for header in reader.fieldnames]
         
         required_headers = ["username", "mac_address", "start_time", "usage_time", "upload", "download"]
         if not all(header in reader.fieldnames for header in required_headers):
             return jsonify({"ok": False, "error": {"message": "Missing required headers"}}), 400
 
-        from models import UserAnalytics  # Import here to avoid circular imports
+        from models import UserAnalytics 
         
         records = []
         for row in reader:
@@ -73,13 +74,14 @@ def create_app(config_class=Config):
         hours, remainder = divmod(int(seconds), 3600)
         minutes, seconds = divmod(remainder, 60)
         return f"{hours}h {minutes}m {seconds}s" if hours > 0 else f"{minutes}m {seconds}s"
+
     @app.route('/analytics', methods=['GET'])
     def get_top_users():
         try:
             date_str = request.args.get('date')
             if not date_str:
                 return jsonify({"ok": False, "error": {"message": "date parameter is required"}}), 400
-                
+                    
             try:
                 date = datetime.strptime(date_str, '%d%m%Y')
                 if date > datetime.now():
@@ -90,9 +92,14 @@ def create_app(config_class=Config):
             page = int(request.args.get('page', 1))
             page_size = int(request.args.get('pageSize', 100))
 
-            from models import UserAnalytics  # Import here to avoid circular imports
+            # Check Redis cache first
+            cache_key = f"analytics:{date_str}:{page}:{page_size}"
+            cached_data = redis_client.get(cache_key)
+            if cached_data:
+                return jsonify(json.loads(cached_data))
 
-            # Calculate time ranges
+            from models import UserAnalytics 
+
             day_start = date - timedelta(days=1)
             week_start = date - timedelta(days=7)
             month_start = date - timedelta(days=30)
@@ -102,21 +109,21 @@ def create_app(config_class=Config):
                 db.func.sum(
                     db.case(
                         (UserAnalytics.start_time >= day_start, 
-                         db.func.extract('epoch', UserAnalytics.usage_time)),
+                        db.func.extract('epoch', UserAnalytics.usage_time)),
                         else_=0
                     )
                 ).label('day_time'),
                 db.func.sum(
                     db.case(
                         (UserAnalytics.start_time >= week_start, 
-                         db.func.extract('epoch', UserAnalytics.usage_time)),
+                        db.func.extract('epoch', UserAnalytics.usage_time)),
                         else_=0
                     )
                 ).label('week_time'),
                 db.func.sum(
                     db.case(
                         (UserAnalytics.start_time >= month_start, 
-                         db.func.extract('epoch', UserAnalytics.usage_time)),
+                        db.func.extract('epoch', UserAnalytics.usage_time)),
                         else_=0
                     )
                 ).label('month_time')
@@ -137,18 +144,21 @@ def create_app(config_class=Config):
                     "last30DayUsage": format_time_duration(result.month_time)
                 })
 
-            return jsonify({
+            response = {
                 "ok": True,
                 "data": response_data,
                 "pageSize": page_size,
                 "page": page,
                 "totalPages": results.pages
-            })
+            }
+
+            redis_client.set(cache_key, json.dumps(response), ex=3600)  # Cache for 1 hour
+
+            return jsonify(response)
 
         except Exception as e:
             return jsonify({"ok": False, "error": {"message": str(e)}}), 500
 
-    @app.route('/user/search', methods=['GET'])
     @app.route('/user/search', methods=['GET'])
     def get_user_details():
         try:
@@ -159,13 +169,16 @@ def create_app(config_class=Config):
             if not username or not datetime_str:
                 return jsonify({"ok": False, "error": {"message": "username and datetime are required"}}), 400
 
-            # Parse datetime string using strptime
             try:
                 datetime_obj = datetime.strptime(datetime_str, '%Y%m%dT%H%M')
             except ValueError:
-                return jsonify({"ok": False, "error": {"message": "invalid datetime format"}}), 400
+                return jsonify({"ok": False, "error": {"message": "Invalid datetime format"}}), 400
 
-            # Perform calculations
+            cache_key = f"user:{username}:search:{datetime_str}"
+            cached_data = redis_client.get(cache_key)
+            if cached_data:
+                return jsonify(json.loads(cached_data))
+
             hour_ago = datetime_obj - timedelta(hours=1)
             six_hours_ago = datetime_obj - timedelta(hours=6)
             day_ago = datetime_obj - timedelta(hours=24)
@@ -233,7 +246,6 @@ def create_app(config_class=Config):
                 UserAnalytics.username
             ).first()
 
-            print("here inside the hour",result)
             if not result:
                 return jsonify({"ok": False, "error": {"message": "user not found"}}), 404
 
@@ -244,7 +256,8 @@ def create_app(config_class=Config):
                     if size < 1024.0:
                         return f"{size:.2f}{unit}"
                     size /= 1024.0
-            return jsonify({
+
+            response = {
                 "ok": True,
                 "data": {
                     "username": username,
@@ -264,7 +277,12 @@ def create_app(config_class=Config):
                         "download": format_data_size(result.day_download)
                     }
                 }
-            })
+            }
+
+            # Cache the result in Redis for future requests
+            redis_client.set(cache_key, json.dumps(response), ex=3600)  # Cache for 1 hour
+
+            return jsonify(response)
 
         except Exception as e:
             return jsonify({"ok": False, "error": {"message": str(e)}}), 500
